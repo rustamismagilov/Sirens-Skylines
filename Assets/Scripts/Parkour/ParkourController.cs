@@ -17,7 +17,9 @@ public class ParkourController : MonoBehaviour
         Queued,
         Executing,
         Recovery,
-        Cooldown
+        Cooldown,
+        WallRunning,
+        WallJumping
     }
 
     [Header("Trigger Gates")]
@@ -72,6 +74,50 @@ public class ParkourController : MonoBehaviour
     [SerializeField] string mantleTrigger = "Mantle";
     [SerializeField] string mediumTrigger = "ClimbMedium";
     [SerializeField] string highTrigger = "ClimbHigh";
+    [SerializeField] string wallRunTrigger = "WallRun";
+    [SerializeField] string wallJumpTrigger = "WallJump";
+
+    [Header("Wall Run — Detection")]
+    [Tooltip("Minimum horizontal speed (m/s) required for an airborne magnet. Grounded starts bypass this.")]
+    [SerializeField] float wallrunMinSpeed = 4.0f;
+    [Tooltip("Magnet range — sideways distance a wall must be within to snap and start wallrunning.")]
+    [SerializeField] float wallMagnetDistance = 2.0f;
+    [Tooltip("Forward ray length for the grounded-start 'nothing in front' check.")]
+    [SerializeField] float wallMagnetForwardClearance = 1.0f;
+    [Tooltip("Height used for side wall probe raycasts.")]
+    [SerializeField] float wallSideProbeHeight = 1.00f;
+    [Tooltip("Second probe height — wall must exist at both probe heights to count as a runnable wall.")]
+    [SerializeField] float wallSideProbeHeightUpper = 1.50f;
+    [Tooltip("If airborne and the wall is within this sideways distance when Space is pressed, do an instant wall-jump instead of a wallrun. Keep this close to cc.radius (~0.4) so only true contact triggers the kick-off.")]
+    [SerializeField] float wallJumpContactDistance = 0.55f;
+    [Tooltip("How much of the player's horizontal velocity must be directed toward the wall (dot product, 0..1) to allow the airborne contact wall-jump. Prevents accidental 'double jumps' when pressing Space while near geometry without approaching it.")]
+    [SerializeField] float airJumpApproachDot = 0.3f;
+
+    [Header("Wall Run — Motion")]
+    [Tooltip("Max seconds on a wall before gravity pulls the player off.")]
+    [SerializeField] float wallrunMaxDuration = 1.5f;
+    [Tooltip("Downward acceleration while wallrunning (m/s^2, negative).")]
+    [SerializeField] float wallrunGravity = -3.0f;
+    [Tooltip("Forward speed along the wall (m/s).")]
+    [SerializeField] float wallrunSpeed = 7.0f;
+    [Tooltip("Initial upward velocity when entering wallrun — lifts the player off the ground for standing starts.")]
+    [SerializeField] float wallrunInitialUpVelocity = 2.0f;
+    [Tooltip("Seconds after entering wallrun during which cc.isGrounded is ignored (prevents immediate detach on ground start).")]
+    [SerializeField] float wallrunGroundedGrace = 0.25f;
+    [Tooltip("Seconds after entering wallrun during which a jump press is ignored (prevents accidental wall-jump right after chain/magnet).")]
+    [SerializeField] float wallrunJumpGrace = 0.15f;
+    [Tooltip("Auto-chain: when airborne AFTER a wallrun, how well the horizontal velocity must align with the side-probe direction (0..1). Set higher to make 'not aiming at next wall' exit the chain more reliably.")]
+    [SerializeField] float chainVelocityAlignment = 0.25f;
+
+    [Header("Wall Run — Wall Jump")]
+    [Tooltip("Outward launch speed away from the wall on wall jump.")]
+    [SerializeField] float wallJumpAwaySpeed = 6.0f;
+    [Tooltip("Upward launch speed on wall jump.")]
+    [SerializeField] float wallJumpUpSpeed = 5.0f;
+    [Tooltip("Grace window after a wall jump during which magnet detection can attach to another wall.")]
+    [SerializeField] float wallJumpAirTime = 1.0f;
+    [Tooltip("Gravity applied during the wall-jump/airborne-between-walls arc (m/s^2, negative).")]
+    [SerializeField] float wallJumpGravity = -12.0f;
 
     [Header("Debug")]
     [SerializeField] bool drawGizmos = true;
@@ -92,6 +138,14 @@ public class ParkourController : MonoBehaviour
 
     DetectionResult queuedHit;
 
+    Vector3 wallNormal;
+    Vector3 wallTangent;
+    float wallVerticalVelocity;
+    Collider lastWallCollider;
+    bool wallrunChainActive;
+
+    Vector3 airVelocity;
+
     int animIDSpeed, animIDMotionSpeed, animIDGrounded, animIDJump, animIDFreeFall;
 
     struct DetectionResult
@@ -99,6 +153,15 @@ public class ParkourController : MonoBehaviour
         public ParkourKind kind;
         public Vector3 ledgeTop;
         public Vector3 wallNormalXZ;
+    }
+
+    struct WallRunCandidate
+    {
+        public Vector3 normal;
+        public Vector3 tangent;
+        public Vector3 contactPoint;
+        public Collider collider;
+        public float distance;
     }
 
     void Start()
@@ -121,7 +184,13 @@ public class ParkourController : MonoBehaviour
         switch (state)
         {
             case State.Idle:
+                if (tpc.Grounded)
+                {
+                    lastWallCollider = null;
+                    wallrunChainActive = false;
+                }
                 TryTrigger();
+                if (state == State.Idle) TryWallRunTrigger();
                 break;
             case State.Queued:
                 TickQueued();
@@ -134,6 +203,12 @@ public class ParkourController : MonoBehaviour
                 break;
             case State.Cooldown:
                 TickTimer(cooldownDuration, State.Idle);
+                break;
+            case State.WallRunning:
+                TickWallRun();
+                break;
+            case State.WallJumping:
+                TickWallJump();
                 break;
         }
     }
@@ -189,14 +264,14 @@ public class ParkourController : MonoBehaviour
         Vector3 origin = feet + Vector3.up * lowProbeHeight;
         if (Physics.Raycast(origin, fwd, out RaycastHit hit, contactDistance, climbableLayer, QueryTriggerInteraction.Ignore))
         {
-            Vector3 wallNormal = hit.normal; wallNormal.y = 0f;
-            if (wallNormal.sqrMagnitude < 0.0001f) return;
-            wallNormal.Normalize();
+            Vector3 n = hit.normal; n.y = 0f;
+            if (n.sqrMagnitude < 0.0001f) return;
+            n.Normalize();
 
-            Vector3 snapPos = new Vector3(hit.point.x, feet.y, hit.point.z) + wallNormal * cc.radius;
+            Vector3 snapPos = new Vector3(hit.point.x, feet.y, hit.point.z) + n * cc.radius;
             transform.position = snapPos;
 
-            queuedHit.wallNormalXZ = wallNormal;
+            queuedHit.wallNormalXZ = n;
             queuedHit.ledgeTop = new Vector3(hit.point.x, queuedHit.ledgeTop.y, hit.point.z);
 
             EnterExecute(queuedHit);
@@ -221,9 +296,9 @@ public class ParkourController : MonoBehaviour
 
         RaycastHit anchor = lowHit;
 
-        Vector3 wallNormal = anchor.normal; wallNormal.y = 0f;
-        if (wallNormal.sqrMagnitude < 0.0001f) return false;
-        wallNormal.Normalize();
+        Vector3 n = anchor.normal; n.y = 0f;
+        if (n.sqrMagnitude < 0.0001f) return false;
+        n.Normalize();
 
         Vector3 ledgeProbeOrigin = anchor.point + fwd * ledgeInset + Vector3.up * 3.0f;
         if (!Physics.Raycast(ledgeProbeOrigin, Vector3.down, out RaycastHit ledgeHit, 4.0f, climbableLayer, QueryTriggerInteraction.Ignore))
@@ -238,11 +313,11 @@ public class ParkourController : MonoBehaviour
         else if (ledgeH <= highMax) kind = ParkourKind.HighClimb;
         else return false;
 
-        if (!HasHeadroom(ledgeHit.point, wallNormal)) return false;
+        if (!HasHeadroom(ledgeHit.point, n)) return false;
 
         result.kind = kind;
         result.ledgeTop = ledgeHit.point;
-        result.wallNormalXZ = wallNormal;
+        result.wallNormalXZ = n;
 
         return true;
     }
@@ -344,6 +419,16 @@ public class ParkourController : MonoBehaviour
         animator.SetBool(animIDFreeFall, false);
     }
 
+    void PinAnimatorAirborne()
+    {
+        if (animator == null) return;
+        animator.SetFloat(animIDSpeed, 0f);
+        animator.SetFloat(animIDMotionSpeed, 0f);
+        animator.SetBool(animIDGrounded, false);
+        animator.SetBool(animIDJump, false);
+        animator.SetBool(animIDFreeFall, true);
+    }
+
     void ResolvePenetration()
     {
         Collider[] nearby = Physics.OverlapCapsule(
@@ -399,6 +484,351 @@ public class ParkourController : MonoBehaviour
         return x * x * (3f - 2f * x);
     }
 
+    // --------------------------------------------------------------
+    // Wall Run
+    // --------------------------------------------------------------
+
+    void TryWallRunTrigger()
+    {
+        if (!inputs.jump) return;
+
+        if (tpc.Grounded)
+        {
+            // Grounded start: Jump + W held + no obstacle in front + side wall nearby
+            if (inputs.move.y < 0.5f) return;
+            if (IsForwardBlocked()) return;
+
+            if (!TryFindSideWall(excluded: lastWallCollider, requireVelocityToward: false, out WallRunCandidate c)) return;
+
+            inputs.jump = false;
+            EnterWallRun(c, isGroundedEntry: true);
+        }
+        else
+        {
+            // Airborne start: Jump + side wall nearby
+            Vector3 vel = cc.velocity; vel.y = 0f;
+            if (vel.magnitude < wallrunMinSpeed * 0.4f) return;
+
+            // Without an active chain, don't allow re-attaching / wall-jumping the same collider we just left.
+            Collider excluded = lastWallCollider;
+
+            if (!TryFindSideWall(excluded: excluded, requireVelocityToward: false, out WallRunCandidate c)) return;
+
+            // Contact wall-jump: require horizontal velocity actually heading into the wall.
+            // Blocks "double jump" when pressing Space while airborne but not approaching the wall.
+            if (c.distance <= wallJumpContactDistance)
+            {
+                Vector3 towardWall = -c.normal;
+                float approach = (vel.sqrMagnitude > 0.01f)
+                    ? Vector3.Dot(vel.normalized, towardWall)
+                    : 0f;
+                if (approach < airJumpApproachDot) return;
+
+                inputs.jump = false;
+                PerformAirWallJump(c);
+            }
+            else
+            {
+                inputs.jump = false;
+                EnterWallRun(c, isGroundedEntry: false);
+            }
+        }
+    }
+
+    void PerformAirWallJump(WallRunCandidate c)
+    {
+        lastWallCollider = c.collider;
+        wallNormal = c.normal;
+        wallTangent = c.tangent;
+
+        Vector3 launch = wallNormal * wallJumpAwaySpeed
+                       + Vector3.up * wallJumpUpSpeed
+                       + wallTangent * (wallrunSpeed * 0.5f);
+
+        tpc.enabled = false;
+        BeginWallJumpArc(launch, fromWallrun: false);
+    }
+
+    bool IsForwardBlocked()
+    {
+        Vector3 feet = transform.position;
+        Vector3 fwd = transform.forward; fwd.y = 0f;
+        if (fwd.sqrMagnitude < 0.0001f) return true;
+        fwd.Normalize();
+        Vector3 origin = feet + Vector3.up * wallSideProbeHeight;
+        return Physics.SphereCast(origin, probeSphereRadius, fwd, out _,
+            wallMagnetForwardClearance, climbableLayer | obstructionLayers,
+            QueryTriggerInteraction.Ignore);
+    }
+
+    bool TryFindSideWall(Collider excluded, bool requireVelocityToward, out WallRunCandidate result)
+    {
+        result = default;
+
+        Vector3 feet = transform.position;
+        Vector3 leftDir = -transform.right;
+        Vector3 rightDir = transform.right;
+
+        bool left  = TrySideProbe(feet, leftDir,  excluded, requireVelocityToward, out RaycastHit leftHit);
+        bool right = TrySideProbe(feet, rightDir, excluded, requireVelocityToward, out RaycastHit rightHit);
+
+        if (!left && !right) return false;
+
+        RaycastHit chosen;
+        if (left && right) chosen = leftHit.distance <= rightHit.distance ? leftHit : rightHit;
+        else chosen = left ? leftHit : rightHit;
+
+        FillCandidate(chosen, ref result);
+        return true;
+    }
+
+    bool TrySideProbe(Vector3 feet, Vector3 sideDir, Collider excluded, bool requireVelocityToward, out RaycastHit hit)
+    {
+        Vector3 o1 = feet + Vector3.up * wallSideProbeHeight;
+        Vector3 o2 = feet + Vector3.up * wallSideProbeHeightUpper;
+
+        if (!Physics.Raycast(o1, sideDir, out hit, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore))
+            return false;
+        if (excluded != null && hit.collider == excluded) return false;
+
+        if (!Physics.Raycast(o2, sideDir, out RaycastHit upperHit, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore))
+            return false;
+        if (upperHit.collider != hit.collider) return false;
+
+        if (requireVelocityToward)
+        {
+            Vector3 vel = cc.velocity; vel.y = 0f;
+            if (vel.sqrMagnitude > 0.01f)
+            {
+                if (Vector3.Dot(vel.normalized, sideDir) < chainVelocityAlignment) return false;
+            }
+        }
+
+        return true;
+    }
+
+    void FillCandidate(RaycastHit hit, ref WallRunCandidate c)
+    {
+        Vector3 n = hit.normal; n.y = 0f;
+        if (n.sqrMagnitude < 0.0001f) n = -transform.forward;
+        n.Normalize();
+
+        Vector3 tangent = Vector3.Cross(Vector3.up, n);
+        Vector3 vel = cc.velocity; vel.y = 0f;
+        if (vel.sqrMagnitude > 0.01f && Vector3.Dot(tangent, vel) < 0f) tangent = -tangent;
+        else if (vel.sqrMagnitude <= 0.01f && Vector3.Dot(tangent, transform.forward) < 0f) tangent = -tangent;
+        tangent.Normalize();
+
+        c.normal = n;
+        c.tangent = tangent;
+        c.contactPoint = hit.point;
+        c.collider = hit.collider;
+        c.distance = hit.distance;
+    }
+
+    void EnterWallRun(WallRunCandidate c, bool isGroundedEntry)
+    {
+        Vector3 originalPos = transform.position;
+        Quaternion originalRot = transform.rotation;
+
+        wallNormal = c.normal;
+        wallTangent = c.tangent;
+
+        Vector3 feet = originalPos;
+        Vector3 snap = new Vector3(c.contactPoint.x, feet.y, c.contactPoint.z) + wallNormal * cc.radius;
+        transform.position = snap;
+        transform.rotation = Quaternion.LookRotation(wallTangent, Vector3.up);
+
+        // Sanity: make sure the wall is actually detectable at one of the verify heights from the snapped position.
+        if (!ProbeWallAtAnyHeight(snap, -wallNormal, c.collider))
+        {
+            transform.position = originalPos;
+            transform.rotation = originalRot;
+            return;
+        }
+
+        lastWallCollider = c.collider;
+        wallVerticalVelocity = isGroundedEntry ? wallrunInitialUpVelocity : 0f;
+
+        tpc.enabled = false;
+
+        if (animator != null && !string.IsNullOrEmpty(wallRunTrigger))
+            animator.SetTrigger(wallRunTrigger);
+
+        stateTimer = 0f;
+        state = State.WallRunning;
+    }
+
+    // True if the wall is detected from the given feet-level origin at any of the three verify heights.
+    bool ProbeWallAtAnyHeight(Vector3 feet, Vector3 sideDir, Collider expected)
+    {
+        float verifyDistance = cc.radius + 0.6f;
+        float[] heights = { wallSideProbeHeight - 0.6f, wallSideProbeHeight, wallSideProbeHeightUpper };
+        foreach (float h in heights)
+        {
+            Vector3 origin = feet + Vector3.up * h;
+            if (Physics.Raycast(origin, sideDir, out RaycastHit hit, verifyDistance, climbableLayer, QueryTriggerInteraction.Ignore))
+            {
+                if (expected == null || hit.collider == expected) return true;
+            }
+        }
+        return false;
+    }
+
+    void TickWallRun()
+    {
+        stateTimer += Time.deltaTime;
+
+        if (stateTimer >= wallrunMaxDuration)
+        {
+            DetachFromWall(jumpOff: false);
+            return;
+        }
+
+        // Verify wall is still there — try three probe heights (below feet, hip, chest). Any hit keeps us attached.
+        Vector3 feet = transform.position;
+        Vector3 sideDir = -wallNormal;
+        float verifyDistance = cc.radius + 0.6f;
+        float[] verifyHeights = { wallSideProbeHeight - 0.6f, wallSideProbeHeight, wallSideProbeHeightUpper };
+        RaycastHit contactHit = default;
+        bool anyHit = false;
+        foreach (float h in verifyHeights)
+        {
+            Vector3 origin = feet + Vector3.up * h;
+            if (Physics.Raycast(origin, sideDir, out RaycastHit tryHit, verifyDistance, climbableLayer, QueryTriggerInteraction.Ignore))
+            {
+                contactHit = tryHit;
+                anyHit = true;
+                break;
+            }
+        }
+        if (!anyHit)
+        {
+            DetachFromWall(jumpOff: false);
+            return;
+        }
+
+        // Refresh normal smoothly so curves aren't a problem
+        Vector3 freshNormal = contactHit.normal; freshNormal.y = 0f;
+        if (freshNormal.sqrMagnitude > 0.0001f)
+        {
+            freshNormal.Normalize();
+            wallNormal = Vector3.Slerp(wallNormal, freshNormal, 0.25f).normalized;
+            Vector3 newTangent = Vector3.Cross(Vector3.up, wallNormal);
+            if (Vector3.Dot(newTangent, wallTangent) < 0f) newTangent = -newTangent;
+            wallTangent = newTangent.normalized;
+        }
+
+        // Wall jump (grace-gated so a chain-entry press doesn't immediately fire)
+        if (stateTimer > wallrunJumpGrace && inputs.jump)
+        {
+            inputs.jump = false;
+            Vector3 launch = wallNormal * wallJumpAwaySpeed
+                           + Vector3.up * wallJumpUpSpeed
+                           + wallTangent * (wallrunSpeed * 0.5f);
+            BeginWallJumpArc(launch, fromWallrun: true);
+            return;
+        }
+
+        // Keep the player pinned to the wall horizontally
+        Vector3 pinTarget = new Vector3(contactHit.point.x, feet.y, contactHit.point.z) + wallNormal * cc.radius;
+        Vector3 pinDelta = pinTarget - feet; pinDelta.y = 0f;
+
+        wallVerticalVelocity += wallrunGravity * Time.deltaTime;
+
+        Vector3 motion = wallTangent * wallrunSpeed + Vector3.up * wallVerticalVelocity;
+        motion += pinDelta / Mathf.Max(Time.deltaTime, 0.0001f) * 0.5f;
+
+        cc.Move(motion * Time.deltaTime);
+
+        transform.rotation = Quaternion.Slerp(transform.rotation,
+            Quaternion.LookRotation(wallTangent, Vector3.up), 12f * Time.deltaTime);
+
+        PinAnimatorIdle();
+
+        if (stateTimer > wallrunGroundedGrace && cc.isGrounded)
+        {
+            DetachFromWall(jumpOff: false);
+        }
+    }
+
+    void DetachFromWall(bool jumpOff)
+    {
+        Vector3 launch = wallTangent * wallrunSpeed * 0.6f
+                       + wallNormal * (jumpOff ? wallJumpAwaySpeed : 1.5f)
+                       + Vector3.up * (jumpOff ? wallJumpUpSpeed : 0f);
+        BeginWallJumpArc(launch, fromWallrun: true);
+    }
+
+    void BeginWallJumpArc(Vector3 launchVelocity, bool fromWallrun)
+    {
+        airVelocity = launchVelocity;
+        if (fromWallrun) wallrunChainActive = true;
+
+        if (animator != null && !string.IsNullOrEmpty(wallJumpTrigger))
+            animator.SetTrigger(wallJumpTrigger);
+
+        stateTimer = 0f;
+        state = State.WallJumping;
+    }
+
+    void TickWallJump()
+    {
+        stateTimer += Time.deltaTime;
+
+        airVelocity.y += wallJumpGravity * Time.deltaTime;
+        cc.Move(airVelocity * Time.deltaTime);
+
+        PinAnimatorAirborne();
+
+        // Auto-chain after a wallrun: no input needed, but velocity must align with the probe direction.
+        // Otherwise require an explicit Space press (same as before).
+        bool autoChain = wallrunChainActive;
+        bool pressChain = inputs.jump;
+        if (autoChain || pressChain)
+        {
+            Vector3 horizVel = airVelocity; horizVel.y = 0f;
+            if (horizVel.magnitude >= wallrunMinSpeed * 0.4f &&
+                TryFindSideWall(excluded: lastWallCollider,
+                                requireVelocityToward: autoChain && !pressChain,
+                                out WallRunCandidate c))
+            {
+                inputs.jump = false;
+                EnterWallRun(c, isGroundedEntry: false);
+                return;
+            }
+        }
+
+        if (cc.isGrounded)
+        {
+            ExitToIdle(reachedGround: true);
+            return;
+        }
+
+        if (stateTimer >= wallJumpAirTime)
+        {
+            ExitToIdle(reachedGround: false);
+        }
+    }
+
+    void ExitToIdle(bool reachedGround)
+    {
+        tpc.enabled = true;
+        inputs.jump = false;
+        activeKind = ParkourKind.None;
+        if (reachedGround)
+        {
+            lastWallCollider = null;
+            wallrunChainActive = false;
+        }
+        stateTimer = 0f;
+        state = State.Idle;
+    }
+
+    // --------------------------------------------------------------
+    // Gizmos
+    // --------------------------------------------------------------
+
     void OnDrawGizmosSelected()
     {
         if (!drawGizmos) return;
@@ -423,12 +853,39 @@ public class ParkourController : MonoBehaviour
         Vector3 contactOrigin = feet + Vector3.up * lowProbeHeight;
         Gizmos.DrawWireSphere(contactOrigin + fwd * contactDistance, 0.08f);
 
+        // Side wall probes (wallrun detection): green line + end sphere, red when hit.
+        Vector3 right = transform.right;
+        float[] sideHeights = { wallSideProbeHeight, wallSideProbeHeightUpper };
+        foreach (float h in sideHeights)
+        {
+            Vector3 o = feet + Vector3.up * h;
+
+            bool hitLeft = Application.isPlaying &&
+                Physics.Raycast(o, -right, out _, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore);
+            Gizmos.color = hitLeft ? Color.red : Color.green;
+            Gizmos.DrawLine(o, o - right * wallMagnetDistance);
+            Gizmos.DrawWireSphere(o - right * wallMagnetDistance, probeSphereRadius);
+
+            bool hitRight = Application.isPlaying &&
+                Physics.Raycast(o, right, out _, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore);
+            Gizmos.color = hitRight ? Color.red : Color.green;
+            Gizmos.DrawLine(o, o + right * wallMagnetDistance);
+            Gizmos.DrawWireSphere(o + right * wallMagnetDistance, probeSphereRadius);
+        }
+
         if (state == State.Executing)
         {
             Gizmos.color = Color.cyan;
             Gizmos.DrawLine(startPos, risePoint);
             Gizmos.DrawLine(risePoint, landingPos);
             Gizmos.DrawWireSphere(landingPos, 0.2f);
+        }
+
+        if (state == State.WallRunning)
+        {
+            Gizmos.color = Color.magenta;
+            Gizmos.DrawLine(transform.position, transform.position + wallTangent * 2f);
+            Gizmos.DrawLine(transform.position, transform.position + wallNormal * 0.7f);
         }
     }
 }
