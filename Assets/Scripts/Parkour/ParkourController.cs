@@ -146,6 +146,9 @@ public class ParkourController : MonoBehaviour
 
     Vector3 airVelocity;
 
+    bool lastJumpHeld;
+    bool jumpPressed;
+
     int animIDSpeed, animIDMotionSpeed, animIDGrounded, animIDJump, animIDFreeFall;
 
     struct DetectionResult
@@ -170,7 +173,8 @@ public class ParkourController : MonoBehaviour
         tpc = GetComponent<ThirdPersonController>();
         inputs = GetComponent<StarterAssetsInputs>();
         animator = GetComponentInChildren<Animator>();
-        if (Camera.main != null) cam = Camera.main.transform;
+        if (Camera.main != null)
+            cam = Camera.main.transform;
 
         animIDSpeed = Animator.StringToHash("Speed");
         animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
@@ -181,6 +185,8 @@ public class ParkourController : MonoBehaviour
 
     void Update()
     {
+        jumpPressed = inputs.jump && !lastJumpHeld;
+
         switch (state)
         {
             case State.Idle:
@@ -190,7 +196,8 @@ public class ParkourController : MonoBehaviour
                     wallrunChainActive = false;
                 }
                 TryTrigger();
-                if (state == State.Idle) TryWallRunTrigger();
+                if (state == State.Idle)
+                    TryWallRunTrigger();
                 break;
             case State.Queued:
                 TickQueued();
@@ -211,24 +218,38 @@ public class ParkourController : MonoBehaviour
                 TickWallJump();
                 break;
         }
+
+        lastJumpHeld = inputs.jump;
     }
 
     void TryTrigger()
     {
-        if (cam == null && Camera.main != null) cam = Camera.main.transform;
-        if (cam == null) return;
+        if (cam == null && Camera.main != null)
+            cam = Camera.main.transform;
+        if (cam == null)
+            return;
 
-        if (!tpc.Grounded) return;
-        if (!inputs.jump) return;
+        if (!tpc.Grounded)
+            return;
+        if (!jumpPressed)
+            return;
 
-        Vector3 vel = cc.velocity; vel.y = 0f;
-        if (vel.magnitude < minTriggerSpeed) return;
+        Vector3 vel = cc.velocity;
+        vel.y = 0f;
+        if (vel.magnitude < minTriggerSpeed)
+            return;
 
-        Vector3 camFwd = cam.forward; camFwd.y = 0f; camFwd.Normalize();
-        Vector3 bodyFwd = transform.forward; bodyFwd.y = 0f; bodyFwd.Normalize();
-        if (Vector3.Dot(camFwd, bodyFwd) < cameraAlignmentMin) return;
+        Vector3 camFwd = cam.forward;
+        camFwd.y = 0f;
+        camFwd.Normalize();
+        Vector3 bodyFwd = transform.forward;
+        bodyFwd.y = 0f;
+        bodyFwd.Normalize();
+        if (Vector3.Dot(camFwd, bodyFwd) < cameraAlignmentMin)
+            return;
 
-        if (!TryDetect(out DetectionResult hit)) return;
+        if (!TryDetect(out DetectionResult hit))
+            return;
 
         inputs.jump = false;
         queuedHit = hit;
@@ -248,7 +269,8 @@ public class ParkourController : MonoBehaviour
             return;
         }
 
-        Vector3 vel = cc.velocity; vel.y = 0f;
+        Vector3 vel = cc.velocity;
+        vel.y = 0f;
         if (vel.magnitude < minTriggerSpeed * 0.5f)
         {
             state = State.Idle;
@@ -257,15 +279,19 @@ public class ParkourController : MonoBehaviour
         }
 
         Vector3 feet = transform.position;
-        Vector3 fwd = transform.forward; fwd.y = 0f;
-        if (fwd.sqrMagnitude < 0.0001f) return;
+        Vector3 fwd = transform.forward;
+        fwd.y = 0f;
+        if (fwd.sqrMagnitude < 0.0001f)
+            return;
         fwd.Normalize();
 
         Vector3 origin = feet + Vector3.up * lowProbeHeight;
         if (Physics.Raycast(origin, fwd, out RaycastHit hit, contactDistance, climbableLayer, QueryTriggerInteraction.Ignore))
         {
-            Vector3 n = hit.normal; n.y = 0f;
-            if (n.sqrMagnitude < 0.0001f) return;
+            Vector3 n = hit.normal;
+            n.y = 0f;
+            if (n.sqrMagnitude < 0.0001f)
+                return;
             n.Normalize();
 
             Vector3 snapPos = new Vector3(hit.point.x, feet.y, hit.point.z) + n * cc.radius;
@@ -283,7 +309,9 @@ public class ParkourController : MonoBehaviour
         result = default;
 
         Vector3 feet = transform.position;
-        Vector3 fwd = transform.forward; fwd.y = 0f; fwd.Normalize();
+        Vector3 fwd = transform.forward;
+        fwd.y = 0f;
+        fwd.Normalize();
 
         bool low = Probe(feet, fwd, lowProbeHeight, out RaycastHit lowHit);
         bool waist = Probe(feet, fwd, waistProbeHeight, out _);
@@ -291,29 +319,39 @@ public class ParkourController : MonoBehaviour
         bool head = Probe(feet, fwd, headProbeHeight, out _);
         bool over = Probe(feet, fwd, overProbeHeight, out _);
 
-        if (over) return false;
-        if (!low) return false;
+        if (over)
+            return false;
+        if (!low)
+            return false;
 
         RaycastHit anchor = lowHit;
 
-        Vector3 n = anchor.normal; n.y = 0f;
-        if (n.sqrMagnitude < 0.0001f) return false;
+        Vector3 n = anchor.normal;
+        n.y = 0f;
+        if (n.sqrMagnitude < 0.0001f)
+            return false;
         n.Normalize();
 
         Vector3 ledgeProbeOrigin = anchor.point + fwd * ledgeInset + Vector3.up * 3.0f;
         if (!Physics.Raycast(ledgeProbeOrigin, Vector3.down, out RaycastHit ledgeHit, 4.0f, climbableLayer, QueryTriggerInteraction.Ignore))
             return false;
 
-        if (Vector3.Angle(ledgeHit.normal, Vector3.up) > ledgeMaxSlope) return false;
+        if (Vector3.Angle(ledgeHit.normal, Vector3.up) > ledgeMaxSlope)
+            return false;
 
         float ledgeH = ledgeHit.point.y - feet.y;
         ParkourKind kind;
-        if (ledgeH >= 0.3f && ledgeH < mantleMax) kind = ParkourKind.Mantle;
-        else if (ledgeH < mediumMax) kind = ParkourKind.MediumClimb;
-        else if (ledgeH <= highMax) kind = ParkourKind.HighClimb;
-        else return false;
+        if (ledgeH >= 0.3f && ledgeH < mantleMax)
+            kind = ParkourKind.Mantle;
+        else if (ledgeH < mediumMax)
+            kind = ParkourKind.MediumClimb;
+        else if (ledgeH <= highMax)
+            kind = ParkourKind.HighClimb;
+        else
+            return false;
 
-        if (!HasHeadroom(ledgeHit.point, n)) return false;
+        if (!HasHeadroom(ledgeHit.point, n))
+            return false;
 
         result.kind = kind;
         result.ledgeTop = ledgeHit.point;
@@ -411,7 +449,8 @@ public class ParkourController : MonoBehaviour
 
     void PinAnimatorIdle()
     {
-        if (animator == null) return;
+        if (animator == null)
+            return;
         animator.SetFloat(animIDSpeed, 0f);
         animator.SetFloat(animIDMotionSpeed, 0f);
         animator.SetBool(animIDGrounded, true);
@@ -421,7 +460,8 @@ public class ParkourController : MonoBehaviour
 
     void PinAnimatorAirborne()
     {
-        if (animator == null) return;
+        if (animator == null)
+            return;
         animator.SetFloat(animIDSpeed, 0f);
         animator.SetFloat(animIDMotionSpeed, 0f);
         animator.SetBool(animIDGrounded, false);
@@ -452,7 +492,8 @@ public class ParkourController : MonoBehaviour
                     pushed = true;
                 }
             }
-            if (!pushed) break;
+            if (!pushed)
+                break;
             nearby = Physics.OverlapCapsule(
                 transform.position + Vector3.up * cc.radius,
                 transform.position + Vector3.up * (cc.height - cc.radius),
@@ -490,48 +531,54 @@ public class ParkourController : MonoBehaviour
 
     void TryWallRunTrigger()
     {
-        if (!inputs.jump) return;
-
         if (tpc.Grounded)
         {
-            // Grounded start: Jump + W held + no obstacle in front + side wall nearby
+            // Grounded start requires a FRESH press so a held jump doesn't retrigger every frame.
+            if (!jumpPressed) return;
+
             if (inputs.move.y < 0.5f) return;
             if (IsForwardBlocked()) return;
 
-            if (!TryFindSideWall(excluded: lastWallCollider, requireVelocityToward: false, out WallRunCandidate c)) return;
+            if (!TryFindSideWall(excluded: lastWallCollider, requireVelocityToward: false, out WallRunCandidate c))
+                return;
 
             inputs.jump = false;
             EnterWallRun(c, isGroundedEntry: true);
         }
         else
         {
-            // Airborne start: Jump + side wall nearby
-            Vector3 vel = cc.velocity; vel.y = 0f;
-            if (vel.magnitude < wallrunMinSpeed * 0.4f) return;
+            // Airborne magnet accepts HELD Space (not just a fresh press) — this is the main
+            // "I'm already in the air with Space held, let me grip the wall on approach" entry.
+            if (!inputs.jump) return;
 
-            // Without an active chain, don't allow re-attaching / wall-jumping the same collider we just left.
+            Vector3 vel = cc.velocity;
+            vel.y = 0f;
+            if (vel.magnitude < 0.5f) return;
+
+            // Without an active chain, don't re-attach to the wall we just left.
             Collider excluded = lastWallCollider;
 
-            if (!TryFindSideWall(excluded: excluded, requireVelocityToward: false, out WallRunCandidate c)) return;
+            if (!TryFindSideWall(excluded: excluded, requireVelocityToward: false, out WallRunCandidate c))
+                return;
 
-            // Contact wall-jump: require horizontal velocity actually heading into the wall.
-            // Blocks "double jump" when pressing Space while airborne but not approaching the wall.
-            if (c.distance <= wallJumpContactDistance)
-            {
-                Vector3 towardWall = -c.normal;
-                float approach = (vel.sqrMagnitude > 0.01f)
-                    ? Vector3.Dot(vel.normalized, towardWall)
-                    : 0f;
-                if (approach < airJumpApproachDot) return;
+            Vector3 towardWall = -c.normal;
+            float approach = (vel.sqrMagnitude > 0.01f)
+                ? Vector3.Dot(vel.normalized, towardWall)
+                : 0f;
 
-                inputs.jump = false;
+            inputs.jump = false;
+
+            // Contact wall-jump (the one with the +5 upward launch) stays gated on a FRESH press.
+            // A held jump leaking from a grounded TPC jump no longer triggers the boost — it
+            // magnets to a wallrun instead, eliminating the "double jump" feel.
+            bool canAirWallJump = jumpPressed
+                                  && c.distance <= wallJumpContactDistance
+                                  && approach >= airJumpApproachDot;
+
+            if (canAirWallJump)
                 PerformAirWallJump(c);
-            }
             else
-            {
-                inputs.jump = false;
                 EnterWallRun(c, isGroundedEntry: false);
-            }
         }
     }
 
@@ -552,8 +599,10 @@ public class ParkourController : MonoBehaviour
     bool IsForwardBlocked()
     {
         Vector3 feet = transform.position;
-        Vector3 fwd = transform.forward; fwd.y = 0f;
-        if (fwd.sqrMagnitude < 0.0001f) return true;
+        Vector3 fwd = transform.forward;
+        fwd.y = 0f;
+        if (fwd.sqrMagnitude < 0.0001f)
+            return true;
         fwd.Normalize();
         Vector3 origin = feet + Vector3.up * wallSideProbeHeight;
         return Physics.SphereCast(origin, probeSphereRadius, fwd, out _,
@@ -569,14 +618,17 @@ public class ParkourController : MonoBehaviour
         Vector3 leftDir = -transform.right;
         Vector3 rightDir = transform.right;
 
-        bool left  = TrySideProbe(feet, leftDir,  excluded, requireVelocityToward, out RaycastHit leftHit);
+        bool left = TrySideProbe(feet, leftDir, excluded, requireVelocityToward, out RaycastHit leftHit);
         bool right = TrySideProbe(feet, rightDir, excluded, requireVelocityToward, out RaycastHit rightHit);
 
-        if (!left && !right) return false;
+        if (!left && !right)
+            return false;
 
         RaycastHit chosen;
-        if (left && right) chosen = leftHit.distance <= rightHit.distance ? leftHit : rightHit;
-        else chosen = left ? leftHit : rightHit;
+        if (left && right)
+            chosen = leftHit.distance <= rightHit.distance ? leftHit : rightHit;
+        else
+            chosen = left ? leftHit : rightHit;
 
         FillCandidate(chosen, ref result);
         return true;
@@ -584,23 +636,35 @@ public class ParkourController : MonoBehaviour
 
     bool TrySideProbe(Vector3 feet, Vector3 sideDir, Collider excluded, bool requireVelocityToward, out RaycastHit hit)
     {
+        // Try both heights; EITHER hit counts as "wall is there".
+        // Requiring both caused ~80% of airborne attempts to fail because short walls (1.8m)
+        // with the player near jump-peak put the upper probe above the wall top.
         Vector3 o1 = feet + Vector3.up * wallSideProbeHeight;
         Vector3 o2 = feet + Vector3.up * wallSideProbeHeightUpper;
 
-        if (!Physics.Raycast(o1, sideDir, out hit, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore))
-            return false;
-        if (excluded != null && hit.collider == excluded) return false;
+        bool h1 = Physics.Raycast(o1, sideDir, out RaycastHit lowerHit, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore);
+        bool h2 = Physics.Raycast(o2, sideDir, out RaycastHit upperHit, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore);
 
-        if (!Physics.Raycast(o2, sideDir, out RaycastHit upperHit, wallMagnetDistance, climbableLayer, QueryTriggerInteraction.Ignore))
+        if (!h1 && !h2)
+        {
+            hit = default;
             return false;
-        if (upperHit.collider != hit.collider) return false;
+        }
+
+        // Prefer the lower probe (more likely to be within wall geometry). Fall back to upper.
+        hit = h1 ? lowerHit : upperHit;
+
+        if (excluded != null && hit.collider == excluded)
+            return false;
 
         if (requireVelocityToward)
         {
-            Vector3 vel = cc.velocity; vel.y = 0f;
+            Vector3 vel = cc.velocity;
+            vel.y = 0f;
             if (vel.sqrMagnitude > 0.01f)
             {
-                if (Vector3.Dot(vel.normalized, sideDir) < chainVelocityAlignment) return false;
+                if (Vector3.Dot(vel.normalized, sideDir) < chainVelocityAlignment)
+                    return false;
             }
         }
 
@@ -609,14 +673,19 @@ public class ParkourController : MonoBehaviour
 
     void FillCandidate(RaycastHit hit, ref WallRunCandidate c)
     {
-        Vector3 n = hit.normal; n.y = 0f;
-        if (n.sqrMagnitude < 0.0001f) n = -transform.forward;
+        Vector3 n = hit.normal;
+        n.y = 0f;
+        if (n.sqrMagnitude < 0.0001f)
+            n = -transform.forward;
         n.Normalize();
 
         Vector3 tangent = Vector3.Cross(Vector3.up, n);
-        Vector3 vel = cc.velocity; vel.y = 0f;
-        if (vel.sqrMagnitude > 0.01f && Vector3.Dot(tangent, vel) < 0f) tangent = -tangent;
-        else if (vel.sqrMagnitude <= 0.01f && Vector3.Dot(tangent, transform.forward) < 0f) tangent = -tangent;
+        Vector3 vel = cc.velocity;
+        vel.y = 0f;
+        if (vel.sqrMagnitude > 0.01f && Vector3.Dot(tangent, vel) < 0f)
+            tangent = -tangent;
+        else if (vel.sqrMagnitude <= 0.01f && Vector3.Dot(tangent, transform.forward) < 0f)
+            tangent = -tangent;
         tangent.Normalize();
 
         c.normal = n;
@@ -669,7 +738,8 @@ public class ParkourController : MonoBehaviour
             Vector3 origin = feet + Vector3.up * h;
             if (Physics.Raycast(origin, sideDir, out RaycastHit hit, verifyDistance, climbableLayer, QueryTriggerInteraction.Ignore))
             {
-                if (expected == null || hit.collider == expected) return true;
+                if (expected == null || hit.collider == expected)
+                    return true;
             }
         }
         return false;
@@ -709,18 +779,21 @@ public class ParkourController : MonoBehaviour
         }
 
         // Refresh normal smoothly so curves aren't a problem
-        Vector3 freshNormal = contactHit.normal; freshNormal.y = 0f;
+        Vector3 freshNormal = contactHit.normal;
+        freshNormal.y = 0f;
         if (freshNormal.sqrMagnitude > 0.0001f)
         {
             freshNormal.Normalize();
             wallNormal = Vector3.Slerp(wallNormal, freshNormal, 0.25f).normalized;
             Vector3 newTangent = Vector3.Cross(Vector3.up, wallNormal);
-            if (Vector3.Dot(newTangent, wallTangent) < 0f) newTangent = -newTangent;
+            if (Vector3.Dot(newTangent, wallTangent) < 0f)
+                newTangent = -newTangent;
             wallTangent = newTangent.normalized;
         }
 
-        // Wall jump (grace-gated so a chain-entry press doesn't immediately fire)
-        if (stateTimer > wallrunJumpGrace && inputs.jump)
+        // Wall jump — fresh Space press only (edge) and grace-gated so a chain-entry press
+        // doesn't immediately fire.
+        if (stateTimer > wallrunJumpGrace && jumpPressed)
         {
             inputs.jump = false;
             Vector3 launch = wallNormal * wallJumpAwaySpeed
@@ -732,7 +805,8 @@ public class ParkourController : MonoBehaviour
 
         // Keep the player pinned to the wall horizontally
         Vector3 pinTarget = new Vector3(contactHit.point.x, feet.y, contactHit.point.z) + wallNormal * cc.radius;
-        Vector3 pinDelta = pinTarget - feet; pinDelta.y = 0f;
+        Vector3 pinDelta = pinTarget - feet;
+        pinDelta.y = 0f;
 
         wallVerticalVelocity += wallrunGravity * Time.deltaTime;
 
@@ -763,7 +837,8 @@ public class ParkourController : MonoBehaviour
     void BeginWallJumpArc(Vector3 launchVelocity, bool fromWallrun)
     {
         airVelocity = launchVelocity;
-        if (fromWallrun) wallrunChainActive = true;
+        if (fromWallrun)
+            wallrunChainActive = true;
 
         if (animator != null && !string.IsNullOrEmpty(wallJumpTrigger))
             animator.SetTrigger(wallJumpTrigger);
@@ -781,13 +856,12 @@ public class ParkourController : MonoBehaviour
 
         PinAnimatorAirborne();
 
-        // Auto-chain after a wallrun: no input needed, but velocity must align with the probe direction.
-        // Otherwise require an explicit Space press (same as before).
         bool autoChain = wallrunChainActive;
-        bool pressChain = inputs.jump;
+        bool pressChain = jumpPressed;
         if (autoChain || pressChain)
         {
-            Vector3 horizVel = airVelocity; horizVel.y = 0f;
+            Vector3 horizVel = airVelocity;
+            horizVel.y = 0f;
             if (horizVel.magnitude >= wallrunMinSpeed * 0.4f &&
                 TryFindSideWall(excluded: lastWallCollider,
                                 requireVelocityToward: autoChain && !pressChain,
@@ -831,11 +905,14 @@ public class ParkourController : MonoBehaviour
 
     void OnDrawGizmosSelected()
     {
-        if (!drawGizmos) return;
+        if (!drawGizmos)
+            return;
 
         Vector3 feet = transform.position;
-        Vector3 fwd = transform.forward; fwd.y = 0f;
-        if (fwd.sqrMagnitude < 0.0001f) return;
+        Vector3 fwd = transform.forward;
+        fwd.y = 0f;
+        if (fwd.sqrMagnitude < 0.0001f)
+            return;
         fwd.Normalize();
 
         float[] heights = { lowProbeHeight, waistProbeHeight, chestProbeHeight, headProbeHeight, overProbeHeight };
